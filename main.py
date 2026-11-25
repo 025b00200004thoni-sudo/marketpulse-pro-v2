@@ -8,97 +8,52 @@ from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI(title="MarketPulse Crypto Futures")
+app = FastAPI(title="MarketPulse CoinGlass Futures")
 BASE = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 
 SYMBOLS = {"BTCUSDT": "Bitcoin", "ETHUSDT": "Ethereum", "SOLUSDT": "Solana"}
 INTERVALS = {"1m", "5m", "15m", "1h", "4h"}
-BINANCE_HOSTS = ["https://fapi.binance.com", "https://fapi1.binance.com", "https://fapi2.binance.com", "https://fapi3.binance.com"]
-BYBIT_HOST = "https://api.bybit.com"
-OKX_HOST = "https://www.okx.com"
-TIMEFRAMES = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240"}
-OKX_BARS = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H"}
+COINGLASS_HOST = "https://open-api-v4.coinglass.com"
 
-async def request_json(client, url, params=None):
-    response = await client.get(url, params=params)
-    response.raise_for_status()
-    return response.json()
+def cg_headers():
+    key = os.getenv("COINGLASS_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("COINGLASS_API_KEY belum dipasang di environment server.")
+    return {"CG-API-KEY": key, "accept": "application/json", "User-Agent": "MarketPulse/5.0"}
 
-def okx_symbol(symbol):
-    return symbol.replace("USDT", "-USDT") + "-SWAP"
+async def cg_get(path, params=None):
+    async with httpx.AsyncClient(timeout=15, headers=cg_headers()) as client:
+        response = await client.get(COINGLASS_HOST + path, params=params)
+        response.raise_for_status()
+        payload = response.json()
+    # CoinGlass can return HTTP 200 even when its business-level request failed.
+    if str(payload.get("code")) != "0":
+        raise RuntimeError("CoinGlass: " + str(payload.get("msg", payload.get("code", "API error"))))
+    return payload.get("data")
 
 async def get_candles(symbol, interval, limit=240):
-    errors = []
-    async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "MarketPulse/4.0"}) as client:
-        # Primary: Binance USD-M Futures
-        for host in BINANCE_HOSTS:
-            try:
-                rows = await request_json(client, host + "/fapi/v1/klines",
-                    {"symbol": symbol, "interval": interval, "limit": limit})
-                rows = rows[:-1]
-                if not rows:
-                    raise ValueError("Binance returned no candles")
-                return pd.DataFrame([{"time": int(x[0]), "open": float(x[1]), "high": float(x[2]),
-                    "low": float(x[3]), "close": float(x[4]), "volume": float(x[5])} for x in rows]), "Binance Futures"
-            except Exception as exc:
-                errors.append("Binance: " + str(exc)[:90])
-        # Secondary: Bybit USDT linear perpetuals
-        try:
-            data = await request_json(client, BYBIT_HOST + "/v5/market/kline",
-                {"category": "linear", "symbol": symbol, "interval": TIMEFRAMES[interval], "limit": min(limit, 1000)})
-            if data.get("retCode") != 0:
-                raise ValueError(data.get("retMsg", "Bybit API error"))
-            rows = list(reversed(data.get("result", {}).get("list", [])))
-            rows = rows[:-1]
-            if not rows:
-                raise ValueError("Bybit returned no candles")
-            return pd.DataFrame([{"time": int(x[0]), "open": float(x[1]), "high": float(x[2]),
-                "low": float(x[3]), "close": float(x[4]), "volume": float(x[5])} for x in rows]), "Bybit Linear"
-        except Exception as exc:
-            errors.append("Bybit: " + str(exc)[:90])
-        # Tertiary: OKX USDT perpetual swaps
-        try:
-            data = await request_json(client, OKX_HOST + "/api/v5/market/candles",
-                {"instId": okx_symbol(symbol), "bar": OKX_BARS[interval], "limit": str(min(limit, 300))})
-            if data.get("code") != "0":
-                raise ValueError(data.get("msg", "OKX API error"))
-            rows = list(reversed(data.get("data", [])))
-            rows = rows[:-1]
-            if not rows:
-                raise ValueError("OKX returned no candles")
-            return pd.DataFrame([{"time": int(x[0]), "open": float(x[1]), "high": float(x[2]),
-                "low": float(x[3]), "close": float(x[4]), "volume": float(x[5])} for x in rows]), "OKX Swap"
-        except Exception as exc:
-            errors.append("OKX: " + str(exc)[:90])
-    raise RuntimeError("Semua sumber data gagal. " + " | ".join(errors))
-
-async def get_orderbook(symbol):
-    errors = []
-    async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "MarketPulse/4.0"}) as client:
-        for host in BINANCE_HOSTS:
-            try:
-                d = await request_json(client, host + "/fapi/v1/depth", {"symbol": symbol, "limit": 20})
-                return {"bids": d["bids"][:12], "asks": d["asks"][:12]}, "Binance Futures"
-            except Exception as exc:
-                errors.append("Binance: " + str(exc)[:70])
-        try:
-            d = await request_json(client, BYBIT_HOST + "/v5/market/orderbook",
-                {"category": "linear", "symbol": symbol, "limit": 25})
-            if d.get("retCode") != 0: raise ValueError(d.get("retMsg", "Bybit API error"))
-            result = d["result"]
-            return {"bids": result["b"][:12], "asks": result["a"][:12]}, "Bybit Linear"
-        except Exception as exc:
-            errors.append("Bybit: " + str(exc)[:70])
-        try:
-            d = await request_json(client, OKX_HOST + "/api/v5/market/books",
-                {"instId": okx_symbol(symbol), "sz": "20"})
-            if d.get("code") != "0": raise ValueError(d.get("msg", "OKX API error"))
-            result = d["data"][0]
-            return {"bids": result["bids"][:12], "asks": result["asks"][:12]}, "OKX Swap"
-        except Exception as exc:
-            errors.append("OKX: " + str(exc)[:70])
-    raise RuntimeError("Order book semua provider gagal. " + " | ".join(errors))
+    rows = await cg_get("/api/futures/price/history", {
+        "exchange": "Binance", "symbol": symbol, "interval": interval, "limit": min(limit, 1000)
+    })
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("CoinGlass tidak mengembalikan candle untuk " + symbol +
+                           ". Periksa pair, timeframe, dan hak akses paket API.")
+    normalized = []
+    for x in rows:
+        normalized.append({
+            "time": int(x["time"]),
+            "open": float(x["open"]),
+            "high": float(x["high"]),
+            "low": float(x["low"]),
+            "close": float(x["close"]),
+            "volume": float(x.get("volume_usd", 0) or 0)
+        })
+    df = pd.DataFrame(normalized).sort_values("time").drop_duplicates("time").reset_index(drop=True)
+    # Do not discard the newest CoinGlass bar: endpoint returns historical OHLC records.
+    if len(df) < 55:
+        raise RuntimeError("Data candle CoinGlass terlalu sedikit untuk menghitung indikator.")
+    return df, "CoinGlass · Binance Futures"
 
 def build_signal(df, symbol, interval, provider):
     close = df.close
@@ -115,8 +70,10 @@ def build_signal(df, symbol, interval, provider):
     tr = pd.concat([df.high-df.low, (df.high-prev).abs(), (df.low-prev).abs()], axis=1).max(axis=1)
     atr = tr.ewm(alpha=1/14, adjust=False).mean()
     price, av, rv = float(close.iloc[-1]), float(atr.iloc[-1]), float(rsi.iloc[-1])
-    bull = sum([ema9.iloc[-1] > ema21.iloc[-1], price > ema50.iloc[-1], macd.iloc[-1] > macd_signal.iloc[-1], 50 < rv < 72])
-    bear = sum([ema9.iloc[-1] < ema21.iloc[-1], price < ema50.iloc[-1], macd.iloc[-1] < macd_signal.iloc[-1], 28 < rv < 50])
+    bull = sum([ema9.iloc[-1] > ema21.iloc[-1], price > ema50.iloc[-1],
+                macd.iloc[-1] > macd_signal.iloc[-1], 50 < rv < 72])
+    bear = sum([ema9.iloc[-1] < ema21.iloc[-1], price < ema50.iloc[-1],
+                macd.iloc[-1] < macd_signal.iloc[-1], 28 < rv < 50])
     side = "LONG" if bull >= 3 and bull > bear else "SHORT" if bear >= 3 and bear > bull else "WAIT"
     risk = max(av * 1.35, price * 0.0012)
     entry = price if side != "WAIT" else None
@@ -139,12 +96,15 @@ async def home():
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "MarketPulse proxy", "providers": ["Binance Futures", "Bybit Linear", "OKX Swap"],
-        "time": datetime.now(timezone.utc).isoformat()}
+    configured = bool(os.getenv("COINGLASS_API_KEY", "").strip())
+    return {"status": "ok" if configured else "needs_api_key", "service": "MarketPulse CoinGlass proxy",
+            "provider": "CoinGlass API V4", "exchange_data": "Binance Futures via CoinGlass",
+            "api_key_configured": configured, "time": datetime.now(timezone.utc).isoformat()}
 
 @app.get("/api/futures/dashboard")
 async def futures_dashboard(interval: str = Query("5m")):
-    if interval not in INTERVALS: return {"error": "Timeframe tidak didukung"}
+    if interval not in INTERVALS:
+        return {"error": "Timeframe tidak didukung"}
     async def one(symbol):
         try:
             df, provider = await get_candles(symbol, interval)
@@ -158,23 +118,22 @@ async def futures_dashboard(interval: str = Query("5m")):
         if error: errors[symbol] = error
     providers = sorted({x["provider"] for x in assets.values()})
     return {"assets": assets, "errors": errors, "providers": providers, "interval": interval,
-        "server_time": datetime.now(timezone.utc).isoformat()}
+            "server_time": datetime.now(timezone.utc).isoformat()}
 
 @app.get("/api/futures/market/{symbol}")
 async def futures_market(symbol: str, interval: str = Query("5m")):
     symbol = symbol.upper()
-    if symbol not in SYMBOLS or interval not in INTERVALS: return {"error": "Symbol atau timeframe tidak didukung"}
-    async def candles_task():
-        df, provider = await get_candles(symbol, interval, 160)
-        return [{"time": int(r.time)//1000, "open": r.open, "high": r.high, "low": r.low, "close": r.close}
-            for r in df.to_dict("records")], provider
-    candles_result, book_result = await asyncio.gather(candles_task(), get_orderbook(symbol), return_exceptions=True)
-    errors = []
-    if isinstance(candles_result, Exception): errors.append("Candles: " + str(candles_result))
-    if isinstance(book_result, Exception): errors.append("Order book: " + str(book_result))
-    if errors: return {"error": " | ".join(errors)[:700]}
-    candles, candle_provider = candles_result
-    book, book_provider = book_result
-    return {"symbol": symbol, "candles": candles, "orderbook": book,
-        "providers": {"candles": candle_provider, "orderbook": book_provider},
-        "server_time": datetime.now(timezone.utc).isoformat()}
+    if symbol not in SYMBOLS or interval not in INTERVALS:
+        return {"error": "Symbol atau timeframe tidak didukung"}
+    try:
+        df, provider = await get_candles(symbol, interval, 240)
+        candles = [{"time": int(r["time"])//1000, "open": r["open"], "high": r["high"],
+                    "low": r["low"], "close": r["close"]} for r in df.to_dict("records")]
+        # CoinGlass OHLC endpoint is used here. A live L2 order book is a separate endpoint/plan
+        # and is intentionally not fabricated from candle data.
+        return {"symbol": symbol, "candles": candles, "orderbook": {"bids": [], "asks": []},
+                "orderbook_note": "Order book L2 belum diaktifkan pada integrasi ini.",
+                "providers": {"candles": provider, "orderbook": "not configured"},
+                "server_time": datetime.now(timezone.utc).isoformat()}
+    except Exception as exc:
+        return {"error": str(exc)[:700]}
