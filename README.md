@@ -1,19 +1,25 @@
-# MarketPulse Crypto Futures
+# MarketPulse — Twelve Data
 
-Dashboard analisis futures dengan sinyal LONG / SHORT / WAIT, candlestick, order book, dan indikator teknikal.
+Dashboard analisis pasar crypto berbasis web HTML dengan backend FastAPI dan Twelve Data API.
 
 ## Fitur
-- Server-side market data proxy: browser hanya memanggil endpoint MarketPulse sendiri.
-- Sumber data candle: CoinGlass API V4, dengan data exchange Binance Futures.
-- Candlestick melalui polling backend CoinGlass (tidak mengakses API bursa langsung dari browser).
-- Sinyal berbasis EMA 9/21/50, RSI 14, MACD, ATR.
-- Entry, Stop Loss, TP1–TP4 (1R, 1.5R, 2R, 3R).
-- Refresh sinyal 15 detik, chart/order book 5 detik.
+- Data candle BTC/USD, ETH/USD, SOL/USD melalui Twelve Data.
+- Timeframe 1 menit, 5 menit, 15 menit, 1 jam, dan 4 jam (ketersediaan mengikuti paket/market access akun Twelve Data).
+- Chart candlestick melalui Lightweight Charts.
+- Indikator EMA 9/21/50, RSI 14, MACD, ATR.
+- Sinyal analisis LONG / SHORT / WAIT beserta simulasi entry, stop loss, dan TP1–TP4.
+- Browser hanya memanggil backend MarketPulse; API key tidak dikirim ke frontend.
 - Notifikasi browser saat sinyal berubah arah.
 
-## Jalankan lokal
+## Menjalankan lokal
 ```bash
 pip install -r requirements.txt
+export TWELVE_DATA_API_KEY="API_KEY_ANDA"
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+Di Windows PowerShell, gunakan:
+```powershell
+$env:TWELVE_DATA_API_KEY="API_KEY_ANDA"
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 Buka http://localhost:8000
@@ -22,26 +28,26 @@ Buka http://localhost:8000
 - Runtime: Python
 - Build command: `pip install -r requirements.txt`
 - Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-- Region yang disarankan: Singapore
 - Root directory: kosong (repository root)
+- Tambahkan Environment Variable:
+  - Key: `TWELVE_DATA_API_KEY`
+  - Value: API key dari akun Twelve Data
+- Simpan perubahan environment agar Render melakukan deploy ulang.
 
-Render akan menyediakan URL publik `onrender.com` setelah deploy berhasil. Deploy membutuhkan workspace Render yang dapat membuat Web Service.
+Jangan memasukkan API key ke `index.html`, JavaScript, atau repository GitHub. Gunakan Environment Variables di server.
 
-## API proxy
-- `/api/health` — status aplikasi dan konfigurasi API key
-- `/api/futures/dashboard?interval=5m` — ringkasan sinyal
-- `/api/futures/market/BTCUSDT?interval=5m` — candles dan order book
+## Endpoint backend
+- `/api/health` — status aplikasi dan status konfigurasi API key.
+- `/api/futures/dashboard?interval=5min` — ringkasan sinyal tiga aset.
+- `/api/futures/market/BTCUSD?interval=5min` — candle BTC/USD untuk chart.
 
-Sumber data memakai CoinGlass API V4 dan membutuhkan paket API serta API key. Atur environment variable `COINGLASS_API_KEY` di server Render (Environment). Jangan menaruh API key di file kode, frontend, atau repository GitHub. Endpoint candle futures yang digunakan adalah `/api/futures/price/history` dengan `exchange=Binance`. Paket CoinGlass menentukan interval terendah dan batas request. Integrasi order book L2 belum diaktifkan pada versi ini; dashboard menampilkan status, bukan data order book palsu. Tidak ada API key yang dikirim ke browser dan tidak ada eksekusi order otomatis.
+## Catatan integrasi
+- Endpoint yang digunakan adalah Twelve Data REST `/time_series`.
+- Autentikasi memakai header `Authorization: apikey YOUR_API_KEY`.
+- Simbol internal BTCUSD, ETHUSD, SOLUSD dipetakan ke pair BTC/USD, ETH/USD, SOL/USD.
+- Timeframe frontend dikirim dalam format Twelve Data: `1min`, `5min`, `15min`, `1h`, `4h`.
+- Paket Twelve Data, market coverage, dan kredit API menentukan akses serta frekuensi request. Dashboard meminta data untuk tiga aset dan melakukan refresh berkala; pantau penggunaan kredit pada akun Twelve Data.
+- Twelve Data `time_series` tidak menyediakan order book Level 2. Panel order book tidak diisi data palsu.
+- Sinyal hanya untuk analisis/informasi, bukan jaminan profit atau nasihat investasi. Tidak ada order otomatis.
 
-## Catatan risiko
-Sinyal bersifat informasional, bukan jaminan profit atau nasihat investasi. Selalu uji strategi, hitung biaya transaksi, funding, slippage, leverage, dan risiko likuidasi sebelum trading.
-
-
-## Menyiapkan CoinGlass API
-1. Buat/aktifkan API key di akun CoinGlass dan pastikan paket API memiliki akses ke Futures Price History.
-2. Di Render, buka service MarketPulse → Environment → Add Environment Variable.
-3. Isi Key `COINGLASS_API_KEY` dan Value dengan API key CoinGlass Anda, lalu simpan agar service melakukan deploy ulang.
-4. Periksa `/api/health`; `api_key_configured` harus bernilai `true`.
-
-Catatan: API CoinGlass memerlukan header `CG-API-KEY`. Respons HTTP 200 belum tentu berarti sukses; backend juga memeriksa field `code` bernilai `0`.
+Dokumentasi: https://twelvedata.com/docs
