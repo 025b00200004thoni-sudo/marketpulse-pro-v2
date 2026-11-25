@@ -99,12 +99,12 @@ async def futures_dashboard(interval: str = Query("5m")):
             "server_time": datetime.now(timezone.utc).isoformat()}
 
 @app.get("/api/futures/market/{symbol}")
-async def futures_market(symbol: str):
+async def futures_market(symbol: str, interval: str = Query("5m")):
     symbol = symbol.upper()
-    if symbol not in SYMBOLS:
+    if symbol not in SYMBOLS or interval not in INTERVALS:
         return {"error": "Symbol tidak didukung"}
     async def candles_task():
-        rows = await futures_candles(symbol, "5m", 160)
+        rows = await futures_candles(symbol, interval, 160)
         return [{"time": int(r.time), "open": r.open, "high": r.high, "low": r.low, "close": r.close} for r in rows.to_dict("records")]
     async def book_task():
         data = await get_json("/fapi/v1/depth", {"symbol": symbol, "limit": 20})
